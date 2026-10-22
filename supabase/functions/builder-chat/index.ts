@@ -1,4 +1,5 @@
-import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
+import { RequestError, requireBuilder, UserLimiter, readBody, validateBody } from "./security.ts";
+const limiter = new UserLimiter();
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -54,11 +55,15 @@ async function retryWithBackoff<T>(fn: () => Promise<T>, maxRetries = 2): Promis
   throw lastErr;
 }
 
-serve(async (req) => {
+Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
 
+  if (req.method !== "POST") return jsonError(405, "Method not allowed");
   try {
-    const body = await req.json();
+    const userId = await requireBuilder(req, Deno.env.get("SUPABASE_URL") ?? "", Deno.env.get("SUPABASE_ANON_KEY") ?? "");
+    limiter.consume(userId);
+    const body = await readBody(req);
+    validateBody(body);
     const {
       messages,
       preset = "component",
@@ -67,7 +72,7 @@ serve(async (req) => {
       userApiKey,
       currentCode,
       imageDataUrl,
-    } = body ?? {};
+    } = body as { messages: Array<{role: string; content: string}>; preset?: string; model?: string; customSystemPrompt?: string; userApiKey?: string; currentCode?: string; imageDataUrl?: string };
 
     if (!Array.isArray(messages) || messages.length === 0) return jsonError(400, "messages must be a non-empty array");
     if (typeof model !== "string" || model.length > 80) return jsonError(400, "invalid model");
@@ -132,8 +137,8 @@ serve(async (req) => {
     );
 
     if (!response.ok) {
-      const text = await response.text().catch(() => "");
-      console.error(`[${providerName}] ${response.status}: ${text.slice(0, 500)}`);
+      await response.body?.cancel();
+      console.error("builder upstream failure", { provider: providerName, status: response.status });
       if (response.status === 429) return jsonError(429, "rate_limited", { provider: providerName, fallback: providerName === "mistral" ? "google/gemini-2.5-flash" : null });
       if (response.status === 402) return jsonError(402, "credits_exhausted", { provider: providerName });
       if (response.status === 401) return jsonError(401, "unauthorized", { provider: providerName, fallback: providerName === "mistral" ? "google/gemini-2.5-flash" : null });
@@ -144,7 +149,8 @@ serve(async (req) => {
       headers: { ...corsHeaders, "Content-Type": "text/event-stream", "X-Builder-Model": model },
     });
   } catch (e) {
-    console.error("builder-chat error:", e);
-    return jsonError(500, e instanceof Error ? e.message : "Unknown error");
+    if (e instanceof RequestError) return jsonError(e.status, e.message);
+    console.error("builder-chat request failed");
+    return jsonError(500, "Request failed");
   }
 });
