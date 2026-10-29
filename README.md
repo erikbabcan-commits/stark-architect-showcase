@@ -71,3 +71,21 @@ Yes, you can!
 To connect a domain, navigate to Project > Settings > Domains and click Connect Domain.
 
 Read more here: [Setting up a custom domain](https://docs.lovable.dev/features/custom-domain#custom-domain)
+
+## Builder security boundary (prototype)
+
+The edge handler requires a server-verified, non-anonymous Supabase user with
+`app_metadata.roles` containing `builder` or `app_metadata.builder_enabled=true`.
+User-editable metadata never grants access. The current public demo client sends
+a public key and is therefore intentionally rejected until a reviewed sign-in
+flow supplies a user access token; this is not a working authenticated demo yet.
+
+The local limiter is per isolate (10 requests/user/minute), not a distributed
+billing quota. A deployment requires an owner-reviewed shared gateway quota and
+provider budget controls. No deployment or production entitlement was changed.
+Requests have body/model/message bounds; raw prompts, headers and upstream error
+bodies are never logged. Copy `.env.example` locally; public client configuration
+is not a privileged credential. Historical tracked configuration is unchanged.
+
+Offline regression: `deno test supabase/functions/builder-chat/security_test.ts`.
+No production credentials or outbound requests are required by these tests.
